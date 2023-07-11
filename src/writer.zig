@@ -77,6 +77,14 @@ pub fn writeProtocol(p: *const objz.Protocol, stream: *std.io.StreamSource) anye
     try writer.printLine("pub const {s} = struct {{", .{p.name});
     writer.pushLevel();
 
+    try writer.writeLineIndent("pub const conforms_to = .{");
+    writer.pushLevel();
+    for (p.protocols.items) |proto| {
+        try writer.printLineIndent("{s},", .{proto});
+    }
+    writer.popLevel();
+    try writer.writeLineIndent("};");
+
     try writer.printLineIndent("const __protocol_name = \"{s}\";\n", .{p.name});
 
     if (p.class_methods.items.len > 0) {
@@ -153,6 +161,8 @@ fn writeInstace(c: *const objz.Class, writer: anytype) anyerror!void {
     try writer.writeLineIndent("pub const Instance = struct {");
     writer.pushLevel();
 
+    try writer.writeLineIndent("pub const conforms_to = Self.conforms_to;");
+
     try writer.writeLineIndent("__object: objc.Object,");
     try writer.writeLine("");
 
@@ -163,10 +173,10 @@ fn writeInstace(c: *const objz.Class, writer: anytype) anyerror!void {
     }
 
     const call_met =
-        \\pub fn __call(self: Self, comptime ReturnType: type, selector: objc.Sel, args: anytype) ReturnType {
-        \\    if (ReturnType == Self) {
+        \\pub fn __call(self: Instance, comptime ReturnType: type, selector: objc.Sel, args: anytype) ReturnType {
+        \\    if (comptime objz.isInstanceType(ReturnType)) {
         \\        const instance = self.__object.msgSend(objc.Object, selector, args);
-        \\        return Self{ .__object = instance };
+        \\        return ReturnType{ .__object = instance };
         \\    } else {
         \\        return self.__object.msgSend(ReturnType, selector, args);
         \\    }
@@ -225,6 +235,8 @@ pub fn writeFileHeader(env: *objz.Env) anyerror!void {
         \\const objc = @import("objc");
         \\const sel = objc.sel;
         \\
+        \\const Id = objz.Id;
+        \\const NSObject = objz.NSObject;
         \\const NSString = objz.NSString;
         \\const NSDictionary = objz.NSDictionary;
         \\
@@ -244,11 +256,13 @@ const class_methods: []const u8 =
     \\}
     \\
     \\pub inline fn __call(comptime ReturnType: type, selector: objc.Sel, args: anytype) ReturnType {
-    \\    if (ReturnType == Instance) {
+    \\    if (comptime objz.isInstanceType(ReturnType)) {
     \\        const instance = class().msgSend(objc.Object, selector, args);
-    \\        return Instance{ .object = instance };
+    \\        return ReturnType{ .__object = instance };
     \\    } else {
     \\        return class().msgSend(ReturnType, selector, args);
     \\    }
     \\}
+    \\
+    \\
 ;

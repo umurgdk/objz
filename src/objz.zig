@@ -156,8 +156,16 @@ pub fn clangTypeToZig(typ: clang.Type, fbs: *std.io.FixedBufferStream([]u8)) voi
         .double => "f64",
         .float128 => "f128",
         .float16 => "f16",
+        .elaborated => {
+            return clangTypeToZig(t.named(), fbs);
+        },
+        .typedef => {
+            return clangTypeToZig(t.typedefUnderlying(), fbs);
+        },
         else => |k| {
-            std.debug.panic("Unknown c type: {}", .{k});
+            const spel = t.spelling();
+            defer spel.free();
+            std.debug.panic("Unknown c type: {}, spelling: {s}", .{ k, spel.str() });
         },
     }) catch unreachable;
 }

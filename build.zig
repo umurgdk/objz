@@ -66,10 +66,20 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    demo.addAnonymousModule("objz", .{ .source_file = .{ .path = "src/runtime.zig" } });
-    demo.addAnonymousModule("objc", .{ .source_file = .{ .path = "libs/zig-objc/src/main.zig" } });
+    demo.addCSourceFile("src/demo/demo.m", &.{});
+
+    const objc = b.createModule(.{ .source_file = .{ .path = "libs/zig-objc/src/main.zig" } });
+    demo.addModule("objc", objc);
+    demo.addAnonymousModule("objz", .{
+        .source_file = .{ .path = "src/runtime.zig" },
+        .dependencies = &.{
+            .{ .name = "objc", .module = objc },
+        },
+    });
+
     demo.linkLibC();
     demo.linkSystemLibrary("objc");
+    demo.linkFramework("Foundation");
 
     b.installArtifact(demo);
 

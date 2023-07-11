@@ -112,6 +112,11 @@ pub const Type = struct {
         return .{ .raw = c.clang_Type_getNamedType(t.raw) };
     }
 
+    pub inline fn typedefUnderlying(t: Type) Type {
+        const decl_raw = c.clang_getTypeDeclaration(t.raw);
+        return .{ .raw = c.clang_getTypedefDeclUnderlyingType(decl_raw) };
+    }
+
     pub inline fn nullability(t: Type) ?Nullability {
         var typ: Type = t;
 

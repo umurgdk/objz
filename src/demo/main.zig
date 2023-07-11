@@ -1,6 +1,20 @@
 const std = @import("std");
-const objc = @import("objc");
+const demo = @import("demo.zig");
+const objz = @import("objz");
 
 pub fn main() !void {
-    std.log.debug("Hello demo world", .{});
+    var myname = objz.NSString.allocStaticStr("Umur Gedik");
+    const inst = demo.MyClass.alloc().initWithNameAndInt(myname, 31);
+
+    std.log.debug("My name is: {s}", .{
+        inst.name().cStringUsingEncoding(objz.NSString.Encoding.utf8),
+    });
+    std.log.debug("My age is: {d}", .{inst.age()});
+
+    inst.setAge(32);
+
+    std.log.debug("My age next month: {d}", .{inst.age()});
+
+    const conformant = objz.Id(demo.SomeProtocol).from(inst);
+    _ = conformant.someMethod(objz.Id(objz.NSObject).from(conformant));
 }

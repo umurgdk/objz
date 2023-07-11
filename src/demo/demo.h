@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#include <objc/NSObjCRuntime.h>
 
 // typedef NS_OPTIONS(NSUInteger, MTLBlitOption) {
 //   MTLBlitOptionNone = 0,
@@ -18,7 +19,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 @protocol SomeProtocol <NSObject>
-- (id<NSObject>)someMethod:(id<NSObject>)anObject;
+- (void)someMethod:(id<NSObject>)anObject;
 @end
 
 @interface AnotherClass : NSObject
@@ -26,12 +27,14 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface MyClass : AnotherClass <SomeProtocol>
 
-@property (nonatomic, copy, nullable) NSString *name;
+@property NSString *name;
+@property NSUInteger age;
 
 + (instancetype)factory;
-+ (int)myClassWithName:(NSString * _Nullable *)name andInt:(int)age;
+- (instancetype)initWithName:(NSString *)name andInt:(NSUInteger)age;
 - (int)primitiveMethod:(int)count;
-- (id<SomeProtocol>)instanceMethod:(NSDictionary<AnotherClass *, NSString *> *)name;
+- (id<SomeProtocol>)instanceMethod:
+    (NSDictionary<AnotherClass *, NSString *> *)name;
 
 @end
 NS_ASSUME_NONNULL_END
