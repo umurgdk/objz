@@ -46,6 +46,11 @@ fn EnumVisitor(comptime Value: type, comptime is_signed: bool) type {
         }
     };
 }
+const StructVisitor = struct {
+    struct_: *objz.Struct,
+    fields: std.ArrayList(objz.Struct.Field),
+    env: *objz.Env,
+};
 
 pub fn visitProtocol(data: *ProtocolVisitor, cursor: clang.Cursor, parent: clang.Cursor) clang.VisitorResult {
     _ = parent;
@@ -102,6 +107,27 @@ pub fn visitInterface(data: *InterfaceVisitor, cursor: clang.Cursor, parent: cla
     return .continue_;
 }
 
+pub fn visitStruct(data: *StructVisitor, cursor: clang.Cursor, parent: clang.Cursor) clang.VisitorResult {
+    _ = parent;
+    switch (cursor.kind()) {
+        .fieldDecl => {
+            const name_raw = cursor.spelling();
+            defer name_raw.free();
+
+            const name = data.env.allocator.dupe(u8, name_raw.str()) catch @panic("allocate");
+
+            var fbs = std.io.fixedBufferStream(&fmt_buf);
+            objz.clangTypeToZig(cursor.typ(), &fbs);
+
+            const typ = data.env.allocator.dupe(u8, fbs.getWritten()) catch @panic("allocate");
+
+            data.fields.append(objz.Struct.Field{ .name = name, .typ = typ }) catch @panic("allocate");
+        },
+        else => {},
+    }
+    return .continue_;
+}
+
 fn createMethod(cursor: clang.Cursor, method: *objz.Method, allocator: std.mem.Allocator) anyerror!void {
     var typ_buf: [1024]u8 = undefined;
 
@@ -152,6 +178,29 @@ pub fn indexDeclaration(env: *objz.Env, info: clang.IndexDeclInfo) void {
     };
 
     switch (entity_info.kind) {
+        clang.c.CXIdxEntity_Typedef => {
+            const raw_name = entity_info.name;
+            const raw_name_len = std.mem.len(raw_name);
+
+            const name = env.allocator.dupe(u8, raw_name[0..raw_name_len]) catch @panic("allocate");
+
+            const underlying_type = decl_cursor.underlyingType().named();
+
+            if (underlying_type.kind() == .record) {
+                var struct_ = objz.Struct{ .name = name, .fields = &.{} };
+                var visitor = StructVisitor{
+                    .struct_ = &struct_,
+                    .fields = std.ArrayList(objz.Struct.Field).init(env.allocator),
+                    .env = env,
+                };
+
+                clang.visitChildrenUserData(underlying_type.declaration(), &visitor, visitStruct);
+
+                struct_.fields = visitor.fields.items;
+
+                writer.writeStruct(&struct_, stream.writer()) catch @panic("write error");
+            }
+        },
         clang.c.CXIdxEntity_Enum => {
             const raw_name = entity_info.name;
             const raw_name_len = std.mem.len(raw_name);

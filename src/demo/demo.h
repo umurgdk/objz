@@ -39,3 +39,26 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 NS_ASSUME_NONNULL_END
+
+typedef struct {
+    /**
+     * @brief Instance options
+     */
+    MTLBlitOption options;
+
+    /**
+     * @brief Instance mask used to ignore geometry during ray tracing
+     */
+    uint32_t mask;
+
+    /**
+     * @brief Motion border mode describing what happens if acceleration structure is sampled
+     * before motionStartTime
+     */
+    MTLCommandEncoderErrorState motionStartBorderMode;
+
+    /**
+     * @brief Motion end time of this instance
+     */
+    float motionEndTime;
+} MTLAccelerationStructureMotionInstanceDescriptor API_AVAILABLE(macos(12.0), ios(15.0));

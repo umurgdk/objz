@@ -59,6 +59,16 @@ pub fn Enum(comptime Value: type) type {
     };
 }
 
+pub const Struct = struct {
+    name: []const u8,
+    fields: []const Field,
+
+    pub const Field = struct {
+        name: []const u8,
+        typ: []const u8,
+    };
+};
+
 pub const Method = struct {
     selector: []const u8,
     arguments: []const Argument,

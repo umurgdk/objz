@@ -172,3 +172,10 @@ pub const MyClass = struct {
     
 };
 
+pub const MTLAccelerationStructureMotionInstanceDescriptor = extern struct {
+    options: MTLBlitOption.Value,
+    mask: u32,
+    motionStartBorderMode: MTLCommandEncoderErrorState,
+    motionEndTime: f32,
+};
+

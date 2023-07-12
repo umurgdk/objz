@@ -143,6 +143,20 @@ pub fn writeEnum(comptime CaseValue: type, e: *const objz.Enum(CaseValue), under
     try writer.writeLine("");
 }
 
+pub fn writeStruct(struct_: *const objz.Struct, underlying_writer: anytype) anyerror!void {
+    var writer = indentedWriter(underlying_writer);
+
+    try writer.printLine("pub const {s} = extern struct {{", .{struct_.name});
+
+    writer.pushLevel();
+    for (struct_.fields) |field| {
+        try writer.printLineIndent("{s}: {s},", .{ field.name, field.typ });
+    }
+    writer.popLevel();
+
+    try writer.writeLine("};\n");
+}
+
 pub fn writeClass(c: *const objz.Class, underlying_writer: anytype) anyerror!void {
     var writer = indentedWriter(underlying_writer);
 

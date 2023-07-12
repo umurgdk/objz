@@ -454,6 +454,10 @@ pub const Cursor = struct {
         return .{ .raw = c.clang_getCursorDisplayName(cur.raw) };
     }
 
+    pub inline fn underlyingType(cur: Cursor) Type {
+        return .{ .raw = c.clang_getTypedefDeclUnderlyingType(cur.raw) };
+    }
+
     pub fn printMethod(cur: Cursor) anyerror!void {
         const name = cur.displayName();
         defer name.free();
