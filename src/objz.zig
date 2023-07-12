@@ -49,6 +49,16 @@ pub const Protocol = struct {
     }
 };
 
+pub fn Enum(comptime Value: type) type {
+    return struct {
+        pub const Case = struct { name: []const u8, value: Value };
+        cases: []const Case,
+        name: []const u8,
+        typ: []const u8,
+        is_options: bool,
+    };
+}
+
 pub const Method = struct {
     selector: []const u8,
     arguments: []const Argument,
@@ -139,6 +149,23 @@ pub fn clangTypeToZig(typ: clang.Type, fbs: *std.io.FixedBufferStream([]u8)) voi
         writer.writeAll(name) catch unreachable;
         writer.writeAll(".Instance") catch unreachable;
         return;
+    } else if (t.kind() == .@"enum") {
+        const name_raw = t.spelling();
+        defer name_raw.free();
+
+        const is_options = t.isFlagEnum();
+        var name_str = name_raw.str();
+        if (std.mem.startsWith(u8, name_str, "enum ")) {
+            name_str = name_str["enum ".len..];
+        }
+
+        if (is_options) {
+            writer.print("{s}.Value", .{name_str}) catch unreachable;
+        } else {
+            writer.writeAll(name_str) catch unreachable;
+        }
+
+        return;
     }
 
     writer.writeAll(switch (t.kind()) {
@@ -156,6 +183,8 @@ pub fn clangTypeToZig(typ: clang.Type, fbs: *std.io.FixedBufferStream([]u8)) voi
         .double => "f64",
         .float128 => "f128",
         .float16 => "f16",
+        .long => "i32",
+        .longlong => "i64",
         .elaborated => {
             return clangTypeToZig(t.named(), fbs);
         },

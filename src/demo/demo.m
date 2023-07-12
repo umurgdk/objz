@@ -1,7 +1,20 @@
 #include "demo.h"
+#include <Foundation/Foundation.h>
 #include <objc/NSObjCRuntime.h>
 
 @implementation AnotherClass
+
+- (void)blit:(MTLBlitOption)options {
+  NSLog(@"Blitting with options:");
+  if (options & MTLBlitOptionDepthFromDepthStencil) {
+    NSLog(@"depthFromDepthStencil");
+  }
+
+  if (options & MTLBlitOptionStencilFromDepthStencil) {
+    NSLog(@"stencilFromDepthStencil");
+  }
+}
+
 @end
 
 @implementation MyClass

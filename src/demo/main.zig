@@ -17,4 +17,7 @@ pub fn main() !void {
 
     const conformant = objz.Id(demo.SomeProtocol).from(inst);
     _ = conformant.someMethod(objz.Id(objz.NSObject).from(conformant));
+
+    const another = demo.AnotherClass.alloc().init();
+    another.blit(demo.MTLBlitOption.depthFromDepthStencil | demo.MTLBlitOption.stencilFromDepthStencil);
 }

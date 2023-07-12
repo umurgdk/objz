@@ -71,8 +71,8 @@ fn indentedWriter(writer: anytype) IndentedWriter(@TypeOf(writer)) {
     return .{ .writer = writer };
 }
 
-pub fn writeProtocol(p: *const objz.Protocol, stream: *std.io.StreamSource) anyerror!void {
-    var writer = indentedWriter(stream.writer());
+pub fn writeProtocol(p: *const objz.Protocol, underlying_writer: anytype) anyerror!void {
+    var writer = indentedWriter(underlying_writer);
 
     try writer.printLine("pub const {s} = struct {{", .{p.name});
     writer.pushLevel();
@@ -115,8 +115,36 @@ pub fn writeProtocol(p: *const objz.Protocol, stream: *std.io.StreamSource) anye
     try writer.writeLine("};\n");
 }
 
-pub fn writeClass(c: *const objz.Class, stream: *std.io.StreamSource) anyerror!void {
-    var writer = indentedWriter(stream.writer());
+pub fn writeEnum(comptime CaseValue: type, e: *const objz.Enum(CaseValue), underlying_writer: anytype) anyerror!void {
+    var writer = indentedWriter(underlying_writer);
+
+    if (e.is_options) {
+        try writer.printLineIndent("pub const {s} = struct {{", .{e.name});
+        writer.pushLevel();
+
+        try writer.printLineIndent("pub const Value = {s};", .{e.typ});
+
+        for (e.cases) |case| {
+            try writer.printLineIndent("pub const {s} = {d};", .{ case.name, case.value });
+        }
+
+        writer.popLevel();
+        try writer.writeLineIndent("};");
+    } else {
+        try writer.printLineIndent("pub const {s} = enum({s}) {{", .{ e.name, e.typ });
+        writer.pushLevel();
+        for (e.cases) |case| {
+            try writer.printLineIndent("{s} = {d},", .{ case.name, case.value });
+        }
+        writer.popLevel();
+        try writer.writeLineIndent("};");
+    }
+
+    try writer.writeLine("");
+}
+
+pub fn writeClass(c: *const objz.Class, underlying_writer: anytype) anyerror!void {
+    var writer = indentedWriter(underlying_writer);
 
     try writer.printLine("pub const {s} = struct {{", .{c.name});
     writer.pushLevel();
@@ -172,19 +200,7 @@ fn writeInstace(c: *const objz.Class, writer: anytype) anyerror!void {
         if (i < methods.len - 1) try writer.writeLine("");
     }
 
-    const call_met =
-        \\pub fn __call(self: Instance, comptime ReturnType: type, selector: objc.Sel, args: anytype) ReturnType {
-        \\    if (comptime objz.isInstanceType(ReturnType)) {
-        \\        const instance = self.__object.msgSend(objc.Object, selector, args);
-        \\        return ReturnType{ .__object = instance };
-        \\    } else {
-        \\        return self.__object.msgSend(ReturnType, selector, args);
-        \\    }
-        \\}
-        \\
-    ;
-
-    var call_line_it = std.mem.splitScalar(u8, call_met, '\n');
+    var call_line_it = std.mem.splitScalar(u8, instance_methods, '\n');
     while (call_line_it.next()) |line| {
         try writer.writeLineIndent(line);
     }
@@ -243,6 +259,22 @@ pub fn writeFileHeader(env: *objz.Env) anyerror!void {
         \\
     );
 }
+
+const instance_methods: []const u8 =
+    \\pub inline fn init(self: Instance) Instance {
+    \\    return self.__call(Instance, sel("init"), .{});
+    \\}
+    \\
+    \\pub inline fn __call(self: Instance, comptime ReturnType: type, selector: objc.Sel, args: anytype) ReturnType {
+    \\    if (comptime objz.isInstanceType(ReturnType)) {
+    \\        const instance = self.__object.msgSend(objc.Object, selector, args);
+    \\        return ReturnType{ .__object = instance };
+    \\    } else {
+    \\        return self.__object.msgSend(ReturnType, selector, args);
+    \\    }
+    \\}
+    \\
+;
 
 const class_methods: []const u8 =
     \\inline fn class() objc.Class {

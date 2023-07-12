@@ -7,6 +7,22 @@ const NSObject = objz.NSObject;
 const NSString = objz.NSString;
 const NSDictionary = objz.NSDictionary;
 
+pub const MTLBlitOption = struct {
+    pub const Value = u32;
+    pub const none = 0;
+    pub const depthFromDepthStencil = 1;
+    pub const stencilFromDepthStencil = 2;
+    pub const rowLinearPVRTC = 4;
+};
+
+pub const MTLCommandEncoderErrorState = enum(i32) {
+    unknown = 0,
+    completed = 1,
+    affected = 2,
+    pending = 3,
+    faulted = 4,
+};
+
 pub const SomeProtocol = struct {
     pub const conforms_to = .{
         NSObject,
@@ -34,7 +50,14 @@ pub const AnotherClass = struct {
         pub const conforms_to = Self.conforms_to;
         __object: objc.Object,
 
-        pub fn __call(self: Instance, comptime ReturnType: type, selector: objc.Sel, args: anytype) ReturnType {
+        pub inline fn blit(self: Instance, options__: MTLBlitOption.Value) void {
+            return self.__call(void, sel("blit:"), .{options__});
+        }
+        pub inline fn init(self: Instance) Instance {
+            return self.__call(Instance, sel("init"), .{});
+        }
+        
+        pub inline fn __call(self: Instance, comptime ReturnType: type, selector: objc.Sel, args: anytype) ReturnType {
             if (comptime objz.isInstanceType(ReturnType)) {
                 const instance = self.__object.msgSend(objc.Object, selector, args);
                 return ReturnType{ .__object = instance };
@@ -108,7 +131,11 @@ pub const MyClass = struct {
         pub inline fn setAge(self: Instance, age__: u32) void {
             return self.__call(void, sel("setAge:"), .{age__});
         }
-        pub fn __call(self: Instance, comptime ReturnType: type, selector: objc.Sel, args: anytype) ReturnType {
+        pub inline fn init(self: Instance) Instance {
+            return self.__call(Instance, sel("init"), .{});
+        }
+        
+        pub inline fn __call(self: Instance, comptime ReturnType: type, selector: objc.Sel, args: anytype) ReturnType {
             if (comptime objz.isInstanceType(ReturnType)) {
                 const instance = self.__object.msgSend(objc.Object, selector, args);
                 return ReturnType{ .__object = instance };

@@ -108,6 +108,25 @@ pub const Type = struct {
         };
     }
 
+    pub inline fn isSigned(t: Type) bool {
+        return switch (t.kind()) {
+            TypeKind.int,
+            TypeKind.int128,
+            TypeKind.char_s,
+            TypeKind.char16,
+            TypeKind.char32,
+            TypeKind.float,
+            TypeKind.float16,
+            TypeKind.float128,
+            TypeKind.double,
+            TypeKind.long,
+            TypeKind.longlong,
+            TypeKind.longdouble,
+            => true,
+            else => false,
+        };
+    }
+
     pub inline fn named(t: Type) Type {
         return .{ .raw = c.clang_Type_getNamedType(t.raw) };
     }
@@ -167,6 +186,27 @@ pub const Type = struct {
 
     pub inline fn kind(t: Type) TypeKind {
         return @as(TypeKind, @enumFromInt(t.raw.kind));
+    }
+
+    pub inline fn declaration(t: Type) Cursor {
+        return .{ .raw = c.clang_getTypeDeclaration(t.raw) };
+    }
+
+    pub fn isFlagEnum(t: Type) bool {
+        const decl = t.declaration();
+        var result = false;
+        visitChildrenUserData(decl, &result, flagEnumVisitor);
+        return result;
+    }
+
+    fn flagEnumVisitor(is_flag_enum: *bool, cursor: Cursor, parent: Cursor) VisitorResult {
+        _ = parent;
+        switch (cursor.kind()) {
+            CursorKind.flagEnum => is_flag_enum.* = true,
+            else => {},
+        }
+
+        return .continue_;
     }
 
     pub inline fn kindSpelling(t: Type) String {
@@ -372,6 +412,18 @@ pub const Cursor = struct {
             .container = cur,
             .accessor = c.clang_Cursor_getArgument,
         };
+    }
+
+    pub inline fn enumIntegerType(cur: Cursor) Type {
+        return .{ .raw = c.clang_getEnumDeclIntegerType(cur.raw) };
+    }
+
+    pub inline fn enumConstantValue(cur: Cursor) u64 {
+        return @intCast(c.clang_getEnumConstantDeclUnsignedValue(cur.raw));
+    }
+
+    pub inline fn enumConstantSignedValue(cur: Cursor) i64 {
+        return @intCast(c.clang_getEnumConstantDeclValue(cur.raw));
     }
 
     pub inline fn typ(cur: Cursor) Type {

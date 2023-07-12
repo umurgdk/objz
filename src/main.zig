@@ -8,17 +8,46 @@ var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
 var stdout = std.io.getStdOut();
 
-const InterfaceVisitor = struct {
-    class: *objz.Class,
-    env: *objz.Env,
-};
+const InterfaceVisitor = struct { class: *objz.Class, env: *objz.Env };
+const ProtocolVisitor = struct { protocol: *objz.Protocol, env: *objz.Env };
+fn EnumVisitor(comptime Value: type, comptime is_signed: bool) type {
+    return struct {
+        const Self = @This();
+        const Case = objz.Enum(Value).Case;
 
-const ProtocolVisitor = struct {
-    protocol: *objz.Protocol,
-    env: *objz.Env,
-};
+        cases: std.ArrayList(Case),
+        is_options: bool,
+        env: *objz.Env,
+        name: []const u8,
 
-pub fn protocolVisitor(data: *ProtocolVisitor, cursor: clang.Cursor, parent: clang.Cursor) clang.VisitorResult {
+        pub fn visit(data: *Self, cursor: clang.Cursor, parent: clang.Cursor) clang.VisitorResult {
+            _ = parent;
+            switch (cursor.kind()) {
+                clang.CursorKind.flagEnum => data.is_options = true,
+                clang.CursorKind.enumConstantDecl => {
+                    const case_val: Value = if (is_signed) cursor.enumConstantSignedValue() else cursor.enumConstantValue();
+                    const case_name_raw = cursor.displayName();
+                    defer case_name_raw.free();
+
+                    var case_str = case_name_raw.str();
+                    if (std.mem.startsWith(u8, case_name_raw.str(), data.name)) {
+                        case_str = case_str[data.name.len..];
+                    }
+
+                    var case_name = data.env.allocator.dupe(u8, case_str) catch @panic("allocate");
+                    case_name[0] = std.ascii.toLower(case_name[0]);
+
+                    data.cases.append(Case{ .name = case_name, .value = case_val }) catch @panic("allocate");
+                },
+                else => {},
+            }
+
+            return .continue_;
+        }
+    };
+}
+
+pub fn visitProtocol(data: *ProtocolVisitor, cursor: clang.Cursor, parent: clang.Cursor) clang.VisitorResult {
     _ = parent;
     if (!cursor.isValid()) {
         return .continue_;
@@ -49,7 +78,7 @@ pub fn protocolVisitor(data: *ProtocolVisitor, cursor: clang.Cursor, parent: cla
     return .continue_;
 }
 
-pub fn interfaceVisitor(data: *InterfaceVisitor, cursor: clang.Cursor, parent: clang.Cursor) clang.VisitorResult {
+pub fn visitInterface(data: *InterfaceVisitor, cursor: clang.Cursor, parent: clang.Cursor) clang.VisitorResult {
     _ = parent;
     if (!cursor.isValid()) {
         return .continue_;
@@ -109,7 +138,7 @@ fn createMethod(cursor: clang.Cursor, method: *objz.Method, allocator: std.mem.A
 
 pub fn indexDeclaration(env: *objz.Env, info: clang.IndexDeclInfo) void {
     const entity_info = info.raw.*.entityInfo.*;
-    const decl_cursor = clang.Cursor{ .raw = entity_info.cursor };
+    const decl_cursor = clang.Cursor{ .raw = info.raw.*.cursor };
 
     var path_buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
     const file_location = decl_cursor.location().fileLocation(&path_buf);
@@ -118,21 +147,78 @@ pub fn indexDeclaration(env: *objz.Env, info: clang.IndexDeclInfo) void {
         return;
     }
 
+    var stream = std.io.BufferedWriter(std.mem.page_size, @TypeOf(env.out_file.writer())){
+        .unbuffered_writer = env.out_file.writer(),
+    };
+
     switch (entity_info.kind) {
+        clang.c.CXIdxEntity_Enum => {
+            const raw_name = entity_info.name;
+            const raw_name_len = std.mem.len(raw_name);
+
+            const name = env.allocator.dupe(u8, raw_name[0..raw_name_len]) catch @panic("allocate");
+
+            const case_typ = decl_cursor.enumIntegerType();
+
+            if (case_typ.isSigned()) {
+                const Visitor = EnumVisitor(i64, true);
+                var visitor = Visitor{
+                    .env = env,
+                    .name = name,
+                    .cases = std.ArrayList(Visitor.Case).init(env.allocator),
+                    .is_options = false,
+                };
+
+                clang.visitChildrenUserData(decl_cursor, &visitor, Visitor.visit);
+
+                var typ_fbs = std.io.fixedBufferStream(&fmt_buf);
+                objz.clangTypeToZig(case_typ, &typ_fbs);
+
+                const Enum = objz.Enum(i64);
+                const enum_ = Enum{
+                    .cases = visitor.cases.items,
+                    .name = name,
+                    .typ = typ_fbs.getWritten(),
+                    .is_options = visitor.is_options,
+                };
+
+                writer.writeEnum(i64, &enum_, stream.writer()) catch @panic("Write error");
+            } else {
+                const Visitor = EnumVisitor(u64, false);
+                var visitor = Visitor{
+                    .env = env,
+                    .name = name,
+                    .cases = std.ArrayList(Visitor.Case).init(env.allocator),
+                    .is_options = false,
+                };
+
+                clang.visitChildrenUserData(decl_cursor, &visitor, Visitor.visit);
+
+                var typ_fbs = std.io.fixedBufferStream(&fmt_buf);
+                objz.clangTypeToZig(case_typ, &typ_fbs);
+
+                const Enum = objz.Enum(u64);
+                const enum_ = Enum{
+                    .cases = visitor.cases.items,
+                    .name = name,
+                    .typ = typ_fbs.getWritten(),
+                    .is_options = visitor.is_options,
+                };
+
+                writer.writeEnum(u64, &enum_, stream.writer()) catch @panic("write error");
+            }
+        },
         clang.c.CXIdxEntity_ObjCProtocol => {
             const raw_name: [*:0]const u8 = entity_info.name;
             const name_len = std.mem.len(raw_name);
             var name = env.allocator.dupe(u8, raw_name[0..name_len]) catch @panic("allocate");
-            defer env.allocator.free(name);
 
             var protocol = objz.Protocol.init(name, env.allocator);
             var data = ProtocolVisitor{ .protocol = &protocol, .env = env };
             const cursor = clang.Cursor{ .raw = info.raw.*.cursor };
 
-            clang.visitChildrenUserData(cursor, &data, protocolVisitor);
-
-            var stream = std.io.StreamSource{ .file = env.out_file };
-            writer.writeProtocol(&protocol, &stream) catch @panic("print error");
+            clang.visitChildrenUserData(cursor, &data, visitProtocol);
+            writer.writeProtocol(&protocol, stream.writer()) catch @panic("print error");
         },
         clang.c.CXIdxEntity_ObjCClass => {
             const raw_name: [*:0]const u8 = entity_info.name;
@@ -168,13 +254,13 @@ pub fn indexDeclaration(env: *objz.Env, info: clang.IndexDeclInfo) void {
             var data = InterfaceVisitor{ .class = &class, .env = env };
             const cursor = clang.Cursor{ .raw = info.raw.*.cursor };
 
-            clang.visitChildrenUserData(cursor, &data, interfaceVisitor);
-
-            var stream = std.io.StreamSource{ .file = env.out_file };
-            writer.writeClass(&class, &stream) catch @panic("print error");
+            clang.visitChildrenUserData(cursor, &data, visitInterface);
+            writer.writeClass(&class, stream.writer()) catch @panic("print error");
         },
         else => {},
     }
+
+    stream.flush() catch @panic("Write error");
 }
 
 pub fn main() !void {
