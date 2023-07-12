@@ -1,8 +1,7 @@
 const std = @import("std");
 const trait = std.meta.trait;
+const objc = @import("objc");
 
-pub const NSString = @import("runtime/NSString.zig");
-pub usingnamespace @import("runtime/NSDictionary.zig");
 pub usingnamespace @import("runtime/Id.zig");
 pub const NSObject = @import("runtime/NSObject.zig");
 

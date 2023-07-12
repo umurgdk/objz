@@ -3,6 +3,32 @@ const objz = @import("objz.zig");
 
 var fmt_buf: [2048]u8 = undefined;
 
+const ZigKeywords = std.ComptimeStringMap([]const u8, .{
+    .{ "const", "const_" },
+    .{ "error", "error_" },
+    .{ "volatile", "volatile_" },
+    .{ "struct", "struct_" },
+    .{ "enum", "enum_" },
+    .{ "fn", "fn_" },
+    .{ "comptime", "comptime_" },
+    .{ "type", "type_" },
+    .{ "align", "align_" },
+    .{ "opaque", "opaque_" },
+});
+
+fn clearZigKeyword(str: []const u8) []const u8 {
+    return ZigKeywords.get(str) orelse str;
+}
+
+fn clearEnumField(str: []const u8) []const u8 {
+    var clear = clearZigKeyword(str);
+    if (std.ascii.isDigit(clear[0])) {
+        clear = std.fmt.bufPrint(&fmt_buf, "_{s}", .{clear}) catch unreachable;
+    }
+
+    return clear;
+}
+
 fn IndentedWriter(comptime Writer: type) type {
     return struct {
         const Self = @This();
@@ -118,6 +144,15 @@ pub fn writeProtocol(p: *const objz.Protocol, underlying_writer: anytype) anyerr
 pub fn writeEnum(comptime CaseValue: type, e: *const objz.Enum(CaseValue), underlying_writer: anytype) anyerror!void {
     var writer = indentedWriter(underlying_writer);
 
+    if (e.name.len == 0) {
+        try writer.writeLine("");
+        for (e.cases) |case| {
+            try writer.printLine("pub const {s} = {d};", .{ clearEnumField(case.name), case.value });
+        }
+        try writer.writeLine("");
+        return;
+    }
+
     if (e.is_options) {
         try writer.printLineIndent("pub const {s} = struct {{", .{e.name});
         writer.pushLevel();
@@ -125,7 +160,7 @@ pub fn writeEnum(comptime CaseValue: type, e: *const objz.Enum(CaseValue), under
         try writer.printLineIndent("pub const Value = {s};", .{e.typ});
 
         for (e.cases) |case| {
-            try writer.printLineIndent("pub const {s} = {d};", .{ case.name, case.value });
+            try writer.printLineIndent("pub const {s} = {d};", .{ clearEnumField(case.name), case.value });
         }
 
         writer.popLevel();
@@ -134,7 +169,7 @@ pub fn writeEnum(comptime CaseValue: type, e: *const objz.Enum(CaseValue), under
         try writer.printLineIndent("pub const {s} = enum({s}) {{", .{ e.name, e.typ });
         writer.pushLevel();
         for (e.cases) |case| {
-            try writer.printLineIndent("{s} = {d},", .{ case.name, case.value });
+            try writer.printLineIndent("{s} = {d},", .{ clearEnumField(case.name), case.value });
         }
         writer.popLevel();
         try writer.writeLineIndent("};");
@@ -150,7 +185,7 @@ pub fn writeStruct(struct_: *const objz.Struct, underlying_writer: anytype) anye
 
     writer.pushLevel();
     for (struct_.fields) |field| {
-        try writer.printLineIndent("{s}: {s},", .{ field.name, field.typ });
+        try writer.printLineIndent("{s}: {s},", .{ clearZigKeyword(field.name), field.typ });
     }
     writer.popLevel();
 
@@ -226,9 +261,9 @@ fn writeInstace(c: *const objz.Class, writer: anytype) anyerror!void {
 fn writeMethod(m: *const objz.Method, writer: anytype) anyerror!void {
     const name = try m.fnName(&fmt_buf);
     if (m.placement == .class) {
-        try writer.printIndent("pub inline fn {s}(", .{name});
+        try writer.printIndent("pub inline fn {s}(", .{clearZigKeyword(name)});
     } else {
-        try writer.printIndent("pub inline fn {s}(self: Instance", .{name});
+        try writer.printIndent("pub inline fn {s}(self: Instance", .{clearZigKeyword(name)});
     }
 
     for (m.arguments, 0..) |argument, i| {
@@ -269,16 +304,13 @@ pub fn writeFileHeader(env: *objz.Env) anyerror!void {
         \\const NSObject = objz.NSObject;
         \\const NSString = objz.NSString;
         \\const NSDictionary = objz.NSDictionary;
+        \\const NSRange = objz.NSRange;
         \\
         \\
     );
 }
 
 const instance_methods: []const u8 =
-    \\pub inline fn init(self: Instance) Instance {
-    \\    return self.__call(Instance, sel("init"), .{});
-    \\}
-    \\
     \\pub inline fn __call(self: Instance, comptime ReturnType: type, selector: objc.Sel, args: anytype) ReturnType {
     \\    if (comptime objz.isInstanceType(ReturnType)) {
     \\        const instance = self.__object.msgSend(objc.Object, selector, args);

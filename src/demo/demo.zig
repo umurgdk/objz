@@ -6,6 +6,7 @@ const Id = objz.Id;
 const NSObject = objz.NSObject;
 const NSString = objz.NSString;
 const NSDictionary = objz.NSDictionary;
+const NSRange = objz.NSRange;
 
 pub const MTLBlitOption = struct {
     pub const Value = u32;
@@ -21,6 +22,10 @@ pub const MTLCommandEncoderErrorState = enum(i32) {
     affected = 2,
     pending = 3,
     faulted = 4,
+};
+
+pub const FnPointers = extern struct {
+    name: *const fn (age: i32, f32) void,
 };
 
 pub const SomeProtocol = struct {
@@ -53,10 +58,6 @@ pub const AnotherClass = struct {
         pub inline fn blit(self: Instance, options__: MTLBlitOption.Value) void {
             return self.__call(void, sel("blit:"), .{options__});
         }
-        pub inline fn init(self: Instance) Instance {
-            return self.__call(Instance, sel("init"), .{});
-        }
-        
         pub inline fn __call(self: Instance, comptime ReturnType: type, selector: objc.Sel, args: anytype) ReturnType {
             if (comptime objz.isInstanceType(ReturnType)) {
                 const instance = self.__object.msgSend(objc.Object, selector, args);
@@ -131,10 +132,6 @@ pub const MyClass = struct {
         pub inline fn setAge(self: Instance, age__: u32) void {
             return self.__call(void, sel("setAge:"), .{age__});
         }
-        pub inline fn init(self: Instance) Instance {
-            return self.__call(Instance, sel("init"), .{});
-        }
-        
         pub inline fn __call(self: Instance, comptime ReturnType: type, selector: objc.Sel, args: anytype) ReturnType {
             if (comptime objz.isInstanceType(ReturnType)) {
                 const instance = self.__object.msgSend(objc.Object, selector, args);

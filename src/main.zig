@@ -75,7 +75,7 @@ pub fn visitProtocol(data: *ProtocolVisitor, cursor: clang.Cursor, parent: clang
                 }
             };
 
-            createMethod(cursor, method, data.env.allocator) catch unreachable;
+            createMethod(cursor, method, data.env) catch unreachable;
         },
         else => {},
     }
@@ -99,7 +99,7 @@ pub fn visitInterface(data: *InterfaceVisitor, cursor: clang.Cursor, parent: cla
                 }
             };
 
-            createMethod(cursor, method, data.env.allocator) catch unreachable;
+            createMethod(cursor, method, data.env) catch unreachable;
         },
         else => {},
     }
@@ -116,20 +116,37 @@ pub fn visitStruct(data: *StructVisitor, cursor: clang.Cursor, parent: clang.Cur
 
             const name = data.env.allocator.dupe(u8, name_raw.str()) catch @panic("allocate");
 
-            var fbs = std.io.fixedBufferStream(&fmt_buf);
-            objz.clangTypeToZig(cursor.typ(), &fbs);
+            const typ = cursor.typ();
+            var zig_typ: []const u8 = "";
 
-            const typ = data.env.allocator.dupe(u8, fbs.getWritten()) catch @panic("allocate");
+            if (typ.isFunctionPointer()) {
+                zig_typ = objz.functionPointerToZig(data.env, cursor, typ) catch @panic("fn pointer conversion");
+            } else {
+                var fbs = std.io.fixedBufferStream(&fmt_buf);
+                objz.clangTypeToZig(typ, &fbs) catch |err| switch (err) {
+                    error.UnknownType => exitUnkonwnType(cursor, typ),
+                    else => @panic(@errorName(err)),
+                };
 
-            data.fields.append(objz.Struct.Field{ .name = name, .typ = typ }) catch @panic("allocate");
+                zig_typ = data.env.allocator.dupe(u8, fbs.getWritten()) catch @panic("allocate");
+            }
+
+            data.fields.append(objz.Struct.Field{ .name = name, .typ = zig_typ }) catch @panic("allocate");
         },
-        else => {},
+        else => |k| {
+            const spl = cursor.spelling();
+            defer spl.free();
+
+            std.log.debug("Unknown struct cursor: {} {s}", .{ k, spl.str() });
+        },
     }
     return .continue_;
 }
 
-fn createMethod(cursor: clang.Cursor, method: *objz.Method, allocator: std.mem.Allocator) anyerror!void {
+fn createMethod(cursor: clang.Cursor, method: *objz.Method, env: *objz.Env) anyerror!void {
     var typ_buf: [1024]u8 = undefined;
+
+    const allocator = env.allocator;
 
     const raw_selector = cursor.spelling();
     defer raw_selector.free();
@@ -144,22 +161,40 @@ fn createMethod(cursor: clang.Cursor, method: *objz.Method, allocator: std.mem.A
 
         var name = try allocator.dupe(u8, raw_name.str());
 
-        var typ_fbs = std.io.fixedBufferStream(&typ_buf);
-        objz.clangTypeToZig(arg.typ(), &typ_fbs);
-        const typ = try allocator.dupe(u8, typ_fbs.getWritten());
+        const typ = arg.typ();
+        var zig_typ: []const u8 = "";
+        if (typ.isFunctionPointer()) {
+            zig_typ = try objz.functionPointerToZig(env, arg, typ);
+        } else {
+            var typ_fbs = std.io.fixedBufferStream(&typ_buf);
+            objz.clangTypeToZig(typ, &typ_fbs) catch |err| switch (err) {
+                error.UnknownType => exitUnkonwnType(arg, typ),
+                else => @panic(@errorName(err)),
+            };
+            zig_typ = try allocator.dupe(u8, typ_fbs.getWritten());
+        }
 
-        try arguments.append(.{ .name = name, .typ = typ });
+        try arguments.append(.{ .name = name, .typ = zig_typ });
     }
 
     const ret_typ_clang = cursor.returnType();
     var ret_typ_fbs = std.io.fixedBufferStream(&typ_buf);
-    objz.clangTypeToZig(ret_typ_clang, &ret_typ_fbs);
+    objz.clangTypeToZig(ret_typ_clang, &ret_typ_fbs) catch |err| switch (err) {
+        error.UnknownType => exitUnkonwnType(cursor, ret_typ_clang),
+        else => @panic(@errorName(err)),
+    };
     const ret_typ = try allocator.dupe(u8, ret_typ_fbs.getWritten());
 
     method.selector = selector;
     method.return_typ = ret_typ;
     method.arguments = arguments.items;
     method.placement = if (cursor.kind() == .objcClassMethodDecl) .class else .instance;
+}
+
+fn exitUnkonwnType(cursor: clang.Cursor, typ: clang.Type) noreturn {
+    const file_loc = cursor.location().fileLocation(&fmt_buf);
+    std.log.err("Unsupported type {} at {s}:{d}", .{ typ.kind(), file_loc.path, file_loc.line });
+    std.os.exit(1);
 }
 
 pub fn indexDeclaration(env: *objz.Env, info: clang.IndexDeclInfo) void {
@@ -169,7 +204,7 @@ pub fn indexDeclaration(env: *objz.Env, info: clang.IndexDeclInfo) void {
     var path_buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
     const file_location = decl_cursor.location().fileLocation(&path_buf);
 
-    if (!std.mem.endsWith(u8, file_location.path, "demo.h")) {
+    if (!std.mem.startsWith(u8, file_location.path, env.file_filter)) {
         return;
     }
 
@@ -203,9 +238,11 @@ pub fn indexDeclaration(env: *objz.Env, info: clang.IndexDeclInfo) void {
         },
         clang.c.CXIdxEntity_Enum => {
             const raw_name = entity_info.name;
-            const raw_name_len = std.mem.len(raw_name);
-
-            const name = env.allocator.dupe(u8, raw_name[0..raw_name_len]) catch @panic("allocate");
+            var name: []const u8 = "";
+            if (raw_name != null) {
+                const raw_name_len = std.mem.len(raw_name);
+                name = env.allocator.dupe(u8, raw_name[0..raw_name_len]) catch @panic("allocate");
+            }
 
             const case_typ = decl_cursor.enumIntegerType();
 
@@ -221,7 +258,10 @@ pub fn indexDeclaration(env: *objz.Env, info: clang.IndexDeclInfo) void {
                 clang.visitChildrenUserData(decl_cursor, &visitor, Visitor.visit);
 
                 var typ_fbs = std.io.fixedBufferStream(&fmt_buf);
-                objz.clangTypeToZig(case_typ, &typ_fbs);
+                objz.clangTypeToZig(case_typ, &typ_fbs) catch |err| switch (err) {
+                    error.UnknownType => exitUnkonwnType(decl_cursor, case_typ),
+                    else => @panic(@errorName(err)),
+                };
 
                 const Enum = objz.Enum(i64);
                 const enum_ = Enum{
@@ -244,7 +284,10 @@ pub fn indexDeclaration(env: *objz.Env, info: clang.IndexDeclInfo) void {
                 clang.visitChildrenUserData(decl_cursor, &visitor, Visitor.visit);
 
                 var typ_fbs = std.io.fixedBufferStream(&fmt_buf);
-                objz.clangTypeToZig(case_typ, &typ_fbs);
+                objz.clangTypeToZig(case_typ, &typ_fbs) catch |err| switch (err) {
+                    error.UnknownType => exitUnkonwnType(decl_cursor, case_typ),
+                    else => @panic(@errorName(err)),
+                };
 
                 const Enum = objz.Enum(u64);
                 const enum_ = Enum{
@@ -312,19 +355,20 @@ pub fn indexDeclaration(env: *objz.Env, info: clang.IndexDeclInfo) void {
     stream.flush() catch @panic("Write error");
 }
 
+pub fn printUsageAndExit() noreturn {
+    std.log.err("Usage: objz [file.ast] [outputpath] [filefilter]", .{});
+    std.os.exit(1);
+}
+
 pub fn main() !void {
     var args_it = try std.process.argsWithAllocator(gpa.allocator());
     _ = args_it.skip();
 
-    const test_ast: [:0]const u8 = args_it.next() orelse {
-        std.log.err("Usage: objz [file.ast] [outputpath]", .{});
-        std.os.exit(1);
-    };
+    const test_ast: [:0]const u8 = args_it.next() orelse printUsageAndExit();
 
-    const out_path = args_it.next() orelse {
-        std.log.err("Usage: objz [file.ast] [outputpath]", .{});
-        std.os.exit(1);
-    };
+    const out_path = args_it.next() orelse printUsageAndExit();
+
+    const file_filter = args_it.next() orelse printUsageAndExit();
 
     var index = clang.Index.init(true, false) catch {
         std.log.err("Failed to create an index", .{});
@@ -348,6 +392,7 @@ pub fn main() !void {
             std.log.err("Failed to open output file: {!}", .{err});
             std.os.exit(1);
         },
+        .file_filter = file_filter,
         .process_dir_path = "",
         .remove_prefix = "",
         .allocator = gpa.allocator(),

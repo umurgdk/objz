@@ -9,6 +9,7 @@ pub const String = struct {
     raw: c.CXString,
     pub fn str(self: String) []const u8 {
         const c_str = c.clang_getCString(self.raw);
+        if (c_str == null) return "";
         const len = std.mem.len(c_str);
         return c_str[0..len];
     }
@@ -192,11 +193,15 @@ pub const Type = struct {
         return .{ .raw = c.clang_getTypeDeclaration(t.raw) };
     }
 
+    pub fn isFunctionPointer(t: Type) bool {
+        return t.pointee().kind() == .functionProto;
+    }
+
     pub fn isFlagEnum(t: Type) bool {
         const decl = t.declaration();
-        var result = false;
-        visitChildrenUserData(decl, &result, flagEnumVisitor);
-        return result;
+        var res = false;
+        visitChildrenUserData(decl, &res, flagEnumVisitor);
+        return res;
     }
 
     fn flagEnumVisitor(is_flag_enum: *bool, cursor: Cursor, parent: Cursor) VisitorResult {
@@ -223,6 +228,15 @@ pub const Type = struct {
 
     pub inline fn pointee(t: Type) Type {
         return .{ .raw = c.clang_getPointeeType(t.raw) };
+    }
+
+    pub inline fn functionArgs(t: Type) ClangIter(Type, Type, c_int) {
+        const num_args = c.clang_getNumArgTypes(t.raw);
+        return .{
+            .len = num_args,
+            .container = t,
+            .accessor = c.clang_getArgType,
+        };
     }
 
     pub inline fn args(t: Type) ClangIter(Type, Type, c_uint) {
@@ -275,6 +289,18 @@ pub const Type = struct {
 
     pub inline fn classType(t: Type) Type {
         return .{ .raw = c.clang_Type_getClassType(t.raw) };
+    }
+
+    pub inline fn arraySize(t: Type) usize {
+        return @intCast(c.clang_getArraySize(t.raw));
+    }
+
+    pub inline fn arrayElementType(t: Type) Type {
+        return .{ .raw = c.clang_getArrayElementType(t.raw) };
+    }
+
+    pub inline fn result(t: Type) Type {
+        return .{ .raw = c.clang_getResultType(t.raw) };
     }
 
     pub fn print(t: Type, prefix: []const u8) anyerror!void {

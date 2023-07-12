@@ -17,6 +17,10 @@ typedef NS_ENUM(NSInteger, MTLCommandEncoderErrorState) {
   MTLCommandEncoderErrorStateFaulted = 4,
 } API_AVAILABLE(macos(11.0), ios(14.0));
 
+typedef struct {
+    void (* name)(int age, float);
+} FnPointers;
+
 NS_ASSUME_NONNULL_BEGIN
 @protocol SomeProtocol <NSObject>
 - (void)someMethod:(id<NSObject>)anObject;
