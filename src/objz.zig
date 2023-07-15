@@ -20,15 +20,27 @@ pub const Class = struct {
     name: []const u8,
     super: []const u8,
     protocols: []const []const u8,
+    type_args: []const []const u8,
 
     instance_methods: std.ArrayList(Method),
     class_methods: std.ArrayList(Method),
 
-    pub fn init(name: []const u8, super: []const u8, protocols: []const []const u8, allocator: std.mem.Allocator) Class {
+    pub fn isGeneric(c: *const Class) bool {
+        return c.type_args.len > 0;
+    }
+
+    pub fn init(
+        name: []const u8,
+        super: []const u8,
+        protocols: []const []const u8,
+        type_args: []const []const u8,
+        allocator: std.mem.Allocator,
+    ) Class {
         return Class{
             .name = name,
             .super = super,
             .protocols = protocols,
+            .type_args = type_args,
             .instance_methods = std.ArrayList(Method).init(allocator),
             .class_methods = std.ArrayList(Method).init(allocator),
         };
@@ -119,7 +131,7 @@ pub fn clangTypeToZig(typ: clang.Type, fbs: *std.io.FixedBufferStream([]u8)) any
         writer.writeAll(")") catch unreachable;
         return;
     } else if (t.isInstancetype()) {
-        writer.writeAll("Instance") catch unreachable;
+        writer.writeAll("Instance__") catch unreachable;
         return;
     } else if (t.pointerKind() == .object) {
         return clangTypeToZig(t.pointee(), fbs);
@@ -128,10 +140,14 @@ pub fn clangTypeToZig(typ: clang.Type, fbs: *std.io.FixedBufferStream([]u8)) any
     const is_pointer = t.isPointer();
     if (is_pointer) {
         writer.writeAll("*") catch unreachable;
+        if (t.isConst()) {
+            writer.writeAll("const ") catch unreachable;
+        }
+
         return clangTypeToZig(typ.pointee(), fbs);
     }
 
-    if (t.isConst() and is_pointer) {
+    if (t.isConst()) {
         writer.writeAll("const ") catch unreachable;
     }
 
@@ -189,6 +205,10 @@ pub fn clangTypeToZig(typ: clang.Type, fbs: *std.io.FixedBufferStream([]u8)) any
         try writer.print("[{d}]", .{t.arraySize()});
         return clangTypeToZig(t.arrayElementType(), fbs);
     } else if (t.kind() == .objCTypeParam) {
+        if (std.mem.indexOf(u8, name, "<")) |langle_idx| {
+            name = name[0..langle_idx];
+        }
+
         return writer.writeAll(name);
     } else if (t.kind() == .objcSel) {
         return writer.writeAll("Sel");
@@ -217,48 +237,75 @@ pub fn clangTypeToZig(typ: clang.Type, fbs: *std.io.FixedBufferStream([]u8)) any
         .longlong => "i64",
         .elaborated => return clangTypeToZig(t.named(), fbs),
         .typedef => return clangTypeToZig(t.typedefUnderlying(), fbs),
-        else => return error.UnknownType,
+        else => |k| {
+            std.log.err("Unknown type: {}", .{k});
+            return error.UnknownType;
+        },
     });
 }
 
-pub fn functionPointerToZig(env: *Env, cursor: clang.Cursor, ptr_typ: clang.Type) anyerror![]const u8 {
-    const allocator = env.allocator;
-
-    std.debug.assert(ptr_typ.kind() == .pointer);
-    const typ = ptr_typ.pointee();
-
-    const return_type = typ.result();
-    var return_zig_type: []const u8 = "";
-    if (return_type.isFunctionPointer()) {
-        return_zig_type = try functionPointerToZig(env, cursor, return_type);
-    } else {
-        var fbs = std.io.fixedBufferStream(&fmt_buf);
-        try clangTypeToZig(return_type, &fbs);
-        return_zig_type = try allocator.dupe(u8, fbs.getWritten());
-    }
-
-    var visitor = FunctionPointerVisitor{
-        .arguments = std.ArrayList(FunctionPointerVisitor.Arg).init(allocator),
-        .env = env,
-    };
-
-    clang.visitChildrenUserData(cursor, &visitor, visitFunctionPointer);
-
-    var fbs = std.io.fixedBufferStream(&fmt_buf);
-    const writer = fbs.writer();
-
-    try writer.writeAll("*const fn (");
-    for (visitor.arguments.items, 0..) |arg, i| {
-        if (arg.name.len > 0) {
-            try writer.print("{s}: ", .{arg.name});
-        }
-        try writer.writeAll(arg.typ);
-        if (i < visitor.arguments.items.len - 1) try writer.writeAll(", ");
-    }
-    try writer.print(") {s}", .{return_zig_type});
-
-    return try allocator.dupe(u8, fbs.getWritten());
+pub fn functionPointerToZig(env: *Env, cursor: clang.Cursor, typ: clang.Type) anyerror![]const u8 {
+    _ = typ;
+    _ = cursor;
+    _ = env;
+    return "fn_pointer";
 }
+
+// pub fn functionPointerToZig(env: *Env, cursor: clang.Cursor, typ: clang.Type) anyerror![]const u8 {
+//     const allocator = env.allocator;
+
+//     const return_type = typ.result();
+//     var return_zig_type: []const u8 = "";
+//     if (return_type.asFunctionPointer()) |proto| {
+//         return_zig_type = try functionPointerToZig(env, cursor, proto);
+//     } else {
+//         var fbs = std.io.fixedBufferStream(&fmt_buf);
+//         try clangTypeToZig(return_type, &fbs);
+//         return_zig_type = try allocator.dupe(u8, fbs.getWritten());
+//     }
+
+//     var visitor = FunctionPointerVisitor{
+//         .arguments = std.ArrayList(FunctionPointerVisitor.Arg).init(allocator),
+//         .env = env,
+//     };
+
+//     clang.visitChildrenUserData(cursor, &visitor, visitFunctionPointer);
+
+//     var proto_buf: [1024]u8 = undefined;
+//     var fbs = std.io.fixedBufferStream(&proto_buf);
+//     const writer = fbs.writer();
+
+//     try writer.writeAll("*const fn (");
+//     if (visitor.arguments.items.len > 0) {
+//         for (visitor.arguments.items, 0..) |arg, i| {
+//             if (arg.name.len > 0) {
+//                 try writer.print("{s}: ", .{arg.name});
+//             }
+//             try writer.writeAll(arg.typ);
+//             if (i < visitor.arguments.items.len - 1) try writer.writeAll(", ");
+//         }
+//     } else {
+//         var i: usize = 0;
+//         var args_it = typ.functionArgs();
+//         while (args_it.next()) |arg| : (i += 1) {
+//             var arg_typ: []const u8 = "";
+//             if (arg.asFunctionPointer()) |proto| {
+//                 arg_typ = try functionPointerToZig(env, cursor, proto);
+//             } else {
+//                 var buf: [1024]u8 = undefined;
+//                 var typ_fbs = std.io.fixedBufferStream(&buf);
+//                 try clangTypeToZig(arg, &typ_fbs);
+//                 arg_typ = env.allocator.dupe(u8, typ_fbs.getWritten()) catch @panic("allocate");
+//             }
+
+//             try writer.writeAll(arg_typ);
+//             if (i < args_it.len - 1) try writer.writeAll(", ");
+//         }
+//     }
+//     try writer.print(") callconv(.C) {s}", .{return_zig_type});
+
+//     return try allocator.dupe(u8, fbs.getWritten());
+// }
 
 const FunctionPointerVisitor = struct {
     const Arg = struct { name: []const u8, typ: []const u8 };
@@ -277,8 +324,8 @@ fn visitFunctionPointer(data: *FunctionPointerVisitor, cursor: clang.Cursor, par
 
             const typ = cursor.typ();
             var zig_typ: []const u8 = "";
-            if (typ.isFunctionPointer()) {
-                zig_typ = functionPointerToZig(data.env, cursor, typ) catch @panic("fn pointer conversion");
+            if (typ.asFunctionPointer()) |proto| {
+                zig_typ = functionPointerToZig(data.env, cursor, proto) catch @panic("fn pointer conversion");
             } else {
                 var typ_fbs = std.io.fixedBufferStream(&fmt_buf);
                 clangTypeToZig(typ, &typ_fbs) catch @panic("c to zig type conversion");
@@ -286,6 +333,8 @@ fn visitFunctionPointer(data: *FunctionPointerVisitor, cursor: clang.Cursor, par
             }
 
             data.arguments.append(.{ .name = owned_name, .typ = zig_typ }) catch @panic("allocate");
+
+            std.log.debug("found fn pointer arg: {s} type: {s}", .{ owned_name, zig_typ });
         },
         else => {},
     }

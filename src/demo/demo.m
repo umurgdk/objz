@@ -2,7 +2,21 @@
 #include <Foundation/Foundation.h>
 #include <objc/NSObjCRuntime.h>
 
+@implementation Generic
+- (void)method:(id<SomeProtocol>  _Nonnull const * _Nullable)arg {
+}
+
+- (void)dynArray:(const NSUInteger * _Nonnull * _Nullable)arg {
+}
+
+@end
+
 @implementation AnotherClass
+
+- (instancetype)init {
+  self = [super init];
+  return self;
+}
 
 - (void)blit:(MTLBlitOption)options {
   NSLog(@"Blitting with options:");
@@ -49,8 +63,12 @@
   return self;
 }
 
-- (id<NSObject>)someMethod:(id<NSObject>)anObject {
-  return self;
+- (void)someMethod:(id<NSObject>)anObject {
+
+}
+
+- (NSUInteger)runCallback:(NSUInteger)num {
+  return self.callback(num);
 }
 
 @end

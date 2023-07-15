@@ -1,7 +1,8 @@
 const std = @import("std");
-pub const c = @cImport(
-    @cInclude("clang-c/Index.h"),
-);
+pub const c = @cImport({
+    @cInclude("clang-c/Index.h");
+    @cInclude("clang-c/FatalErrorHandler.h");
+});
 
 var fmt_buf: [2048]u8 = undefined;
 
@@ -193,8 +194,11 @@ pub const Type = struct {
         return .{ .raw = c.clang_getTypeDeclaration(t.raw) };
     }
 
-    pub fn isFunctionPointer(t: Type) bool {
-        return t.pointee().kind() == .functionProto;
+    pub fn asFunctionPointer(t: Type) ?Type {
+        var p = if (t.kind() == .elaborated) t.canonical() else t;
+        p = if (p.isPointer()) p.pointee() else p;
+
+        return if (p.isValid() and p.kind() == .functionProto) p else return null;
     }
 
     pub fn isFlagEnum(t: Type) bool {
@@ -301,79 +305,6 @@ pub const Type = struct {
 
     pub inline fn result(t: Type) Type {
         return .{ .raw = c.clang_getResultType(t.raw) };
-    }
-
-    pub fn print(t: Type, prefix: []const u8) anyerror!void {
-        var typ = t;
-        const name = typ.spelling();
-        defer name.free();
-
-        const kind_spell = typ.kindSpelling();
-        defer kind_spell.free();
-
-        var i: usize = 0;
-        var proto_it = t.protocols();
-        var args_it = t.args();
-
-        std.log.debug("        {s} [num_protocols={d}] [num_type_args={d}] [kind={s}] [name={s}] [is_id={}] [is_const={}] [is_nullable={}]", .{
-            prefix,
-            proto_it.len,
-            args_it.len,
-            kind_spell.str(),
-            name.str(),
-            typ.isId(),
-            typ.isConst(),
-            typ.pointee().isNullable(),
-        });
-
-        if (t.pointerKind() == .primitive) {
-            return t.pointee().print("    (points_to)");
-        }
-
-        {
-            const can = t.canonical();
-            if (!t.eql(can)) {
-                try can.print("    (canonical)");
-            }
-        }
-
-        {
-            const cls = t.classType();
-            if (!t.eql(cls) and cls.isValid()) {
-                try cls.print("    (class)");
-            }
-        }
-
-        {
-            const mod = t.modified();
-            if (!t.eql(mod) and mod.isValid()) {
-                try mod.print("    (modified)");
-            }
-        }
-
-        {
-            const val = t.valueType();
-            if (!t.eql(val) and val.isValid()) {
-                try val.print("    (value)");
-            }
-        }
-
-        if (t.isId()) {
-            while (proto_it.next()) |proto| : (i += 1) {
-                const proto_name = proto.spelling();
-                defer proto_name.free();
-
-                std.log.debug("            (proto {d}): {s}", .{ i, proto_name.str() });
-            }
-        } else {
-            while (args_it.next()) |arg| : (i += 1) {
-                var fbs = std.io.fixedBufferStream(&fmt_buf);
-                const writer = fbs.writer();
-
-                try writer.print("    (generic {d})", .{i});
-                try arg.print(fbs.getWritten());
-            }
-        }
     }
 };
 
@@ -482,28 +413,6 @@ pub const Cursor = struct {
 
     pub inline fn underlyingType(cur: Cursor) Type {
         return .{ .raw = c.clang_getTypedefDeclUnderlyingType(cur.raw) };
-    }
-
-    pub fn printMethod(cur: Cursor) anyerror!void {
-        const name = cur.displayName();
-        defer name.free();
-
-        var args_it = cur.args();
-
-        std.log.debug("    {s} [num_args={d}]", .{ name.str(), args_it.len });
-        try cur.returnType().print("(return)");
-
-        var i: usize = 0;
-        while (args_it.next()) |arg| : (i += 1) {
-            var fbs = std.io.fixedBufferStream(&fmt_buf);
-            const writer = fbs.writer();
-
-            const arg_name = arg.spelling();
-            defer arg_name.free();
-
-            try writer.print("(arg {d}: {s})", .{ i, arg_name.str() });
-            try arg.typ().print(fbs.getWritten());
-        }
     }
 };
 
@@ -988,7 +897,7 @@ pub const DiagnosticSet = struct {
 
     pub fn iterator(ds: DiagnosticSet) Iterator {
         const len = c.clang_getNumDiagnosticsInSet(ds.raw);
-        _ = len;
+        return .{ .len = len, .raw = ds.raw };
     }
 
     pub const Iterator = struct {
@@ -1043,7 +952,7 @@ pub fn indexTranslationUnitUserInfo(
     translation_unit: TranslationUnit,
     user_info: anytype,
     callbacks: IndexClosure(@TypeOf(user_info)).Callbacks,
-) void {
+) anyerror!void {
     const Closure = IndexClosure(@TypeOf(user_info));
     var closure = Closure{ .data = user_info, .callbacks = callbacks };
 
@@ -1059,7 +968,15 @@ pub fn indexTranslationUnitUserInfo(
         .indexEntityReference = if (callbacks.indexEntityReference != null) Closure.indexEntityReference else null,
     };
 
-    _ = c.clang_indexTranslationUnit(action, &closure, &raw_callbacks, Closure.callbacks_size, c.CXIndexOpt_None, translation_unit.raw);
+    const errno = c.clang_indexTranslationUnit(action, &closure, &raw_callbacks, Closure.callbacks_size, c.CXIndexOpt_None, translation_unit.raw);
+    return switch (errno) {
+        c.CXError_Success => return,
+        c.CXError_InvalidArguments => error.ClangInvalidArguments,
+        c.CXError_Failure => error.ClangFailure,
+        c.CXError_Crashed => error.ClangCrashed,
+        c.CXError_ASTReadError => error.ClangASTRead,
+        else => error.ClangUnknown,
+    };
 }
 
 fn IndexClosure(comptime Data: type) type {

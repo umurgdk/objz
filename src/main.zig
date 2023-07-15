@@ -8,7 +8,12 @@ var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
 var stdout = std.io.getStdOut();
 
-const InterfaceVisitor = struct { class: *objz.Class, env: *objz.Env };
+const InterfaceVisitor = struct {
+    class: *objz.Class,
+    env: *objz.Env,
+    protocols: std.ArrayList([]const u8),
+    type_args: std.ArrayList([]const u8),
+};
 const ProtocolVisitor = struct { protocol: *objz.Protocol, env: *objz.Env };
 fn EnumVisitor(comptime Value: type, comptime is_signed: bool) type {
     return struct {
@@ -54,9 +59,7 @@ const StructVisitor = struct {
 
 pub fn visitProtocol(data: *ProtocolVisitor, cursor: clang.Cursor, parent: clang.Cursor) clang.VisitorResult {
     _ = parent;
-    if (!cursor.isValid()) {
-        return .continue_;
-    }
+    if (!cursor.isValid()) return .break_;
 
     switch (cursor.kind()) {
         .objCProtocolRef => {
@@ -85,11 +88,16 @@ pub fn visitProtocol(data: *ProtocolVisitor, cursor: clang.Cursor, parent: clang
 
 pub fn visitInterface(data: *InterfaceVisitor, cursor: clang.Cursor, parent: clang.Cursor) clang.VisitorResult {
     _ = parent;
-    if (!cursor.isValid()) {
-        return .continue_;
-    }
+    if (!cursor.isValid()) return .break_;
 
     switch (cursor.kind()) {
+        .templateTypeParameter => {
+            const name = cursor.spelling();
+            defer name.free();
+
+            const owned_name = data.env.allocator.dupe(u8, name.str()) catch @panic("allocate");
+            data.type_args.append(owned_name) catch @panic("allocate");
+        },
         .objcClassMethodDecl, .objcInstanceMethodDecl => {
             var method = brk: {
                 if (cursor.kind() == .objcClassMethodDecl) {
@@ -109,6 +117,8 @@ pub fn visitInterface(data: *InterfaceVisitor, cursor: clang.Cursor, parent: cla
 
 pub fn visitStruct(data: *StructVisitor, cursor: clang.Cursor, parent: clang.Cursor) clang.VisitorResult {
     _ = parent;
+    if (!cursor.isValid()) return .break_;
+
     switch (cursor.kind()) {
         .fieldDecl => {
             const name_raw = cursor.spelling();
@@ -119,8 +129,8 @@ pub fn visitStruct(data: *StructVisitor, cursor: clang.Cursor, parent: clang.Cur
             const typ = cursor.typ();
             var zig_typ: []const u8 = "";
 
-            if (typ.isFunctionPointer()) {
-                zig_typ = objz.functionPointerToZig(data.env, cursor, typ) catch @panic("fn pointer conversion");
+            if (typ.asFunctionPointer()) |proto| {
+                zig_typ = objz.functionPointerToZig(data.env, cursor, proto) catch @panic("fn pointer conversion");
             } else {
                 var fbs = std.io.fixedBufferStream(&fmt_buf);
                 objz.clangTypeToZig(typ, &fbs) catch |err| switch (err) {
@@ -163,8 +173,8 @@ fn createMethod(cursor: clang.Cursor, method: *objz.Method, env: *objz.Env) anye
 
         const typ = arg.typ();
         var zig_typ: []const u8 = "";
-        if (typ.isFunctionPointer()) {
-            zig_typ = try objz.functionPointerToZig(env, arg, typ);
+        if (typ.asFunctionPointer()) |proto| {
+            zig_typ = try objz.functionPointerToZig(env, arg, proto);
         } else {
             var typ_fbs = std.io.fixedBufferStream(&typ_buf);
             objz.clangTypeToZig(typ, &typ_fbs) catch |err| switch (err) {
@@ -178,22 +188,44 @@ fn createMethod(cursor: clang.Cursor, method: *objz.Method, env: *objz.Env) anye
     }
 
     const ret_typ_clang = cursor.returnType();
-    var ret_typ_fbs = std.io.fixedBufferStream(&typ_buf);
-    objz.clangTypeToZig(ret_typ_clang, &ret_typ_fbs) catch |err| switch (err) {
-        error.UnknownType => exitUnkonwnType(cursor, ret_typ_clang),
-        else => @panic(@errorName(err)),
-    };
-    const ret_typ = try allocator.dupe(u8, ret_typ_fbs.getWritten());
+    var ret_typ_zig: []const u8 = "";
+    if (ret_typ_clang.asFunctionPointer()) |proto| {
+        ret_typ_zig = try objz.functionPointerToZig(env, cursor, proto);
+    } else {
+        var ret_typ_fbs = std.io.fixedBufferStream(&typ_buf);
+        objz.clangTypeToZig(ret_typ_clang, &ret_typ_fbs) catch |err| switch (err) {
+            error.UnknownType => exitUnkonwnType(cursor, ret_typ_clang),
+            else => @panic(@errorName(err)),
+        };
+        ret_typ_zig = try allocator.dupe(u8, ret_typ_fbs.getWritten());
+    }
 
     method.selector = selector;
-    method.return_typ = ret_typ;
+    method.return_typ = ret_typ_zig;
     method.arguments = arguments.items;
     method.placement = if (cursor.kind() == .objcClassMethodDecl) .class else .instance;
 }
 
 fn exitUnkonwnType(cursor: clang.Cursor, typ: clang.Type) noreturn {
+    var t = typ;
+    if (t.kind() == .elaborated) {
+        t = t.canonical();
+        std.log.err("Type is elaborated, canonical: {}", .{t.kind()});
+    }
+
+    if (t.kind() == .typedef) {
+        t = t.canonical();
+        std.log.err("Type is a typedef to {}", .{t.kind()});
+    }
+
+    if (t.isPointer()) {
+        t = t.pointee();
+        std.log.err("Type is a pointer pointing to: {}", .{t.kind()});
+    }
+
     const file_loc = cursor.location().fileLocation(&fmt_buf);
     std.log.err("Unsupported type {} at {s}:{d}", .{ typ.kind(), file_loc.path, file_loc.line });
+    std.debug.dumpCurrentStackTrace(null);
     std.os.exit(1);
 }
 
@@ -342,11 +374,25 @@ pub fn indexDeclaration(env: *objz.Env, info: clang.IndexDeclInfo) void {
                 protocols[i] = protocol;
             }
 
-            var class = objz.Class.init(name, baseclass, protocols, env.allocator);
-            var data = InterfaceVisitor{ .class = &class, .env = env };
+            var class = objz.Class.init(
+                name,
+                baseclass,
+                protocols,
+                &.{},
+                env.allocator,
+            );
+            var data = InterfaceVisitor{
+                .class = &class,
+                .env = env,
+                .protocols = std.ArrayList([]const u8).init(env.allocator),
+                .type_args = std.ArrayList([]const u8).init(env.allocator),
+            };
+
             const cursor = clang.Cursor{ .raw = info.raw.*.cursor };
 
             clang.visitChildrenUserData(cursor, &data, visitInterface);
+
+            class.type_args = data.type_args.items;
             writer.writeClass(&class, stream.writer()) catch @panic("print error");
         },
         else => {},
@@ -360,6 +406,24 @@ pub fn printUsageAndExit() noreturn {
     std.os.exit(1);
 }
 
+pub fn abort_cb(env: *objz.Env, reserved: ?*anyopaque) c_int {
+    _ = reserved;
+    _ = env;
+    return 0;
+}
+
+pub fn diagnostic(env: *objz.Env, diag_set: clang.DiagnosticSet) void {
+    _ = env;
+
+    var diag_it = diag_set.iterator();
+    while (diag_it.next()) |diag| {
+        const msg = clang.String{ .raw = clang.c.clang_getDiagnosticSpelling(diag.raw) };
+        defer msg.free();
+
+        std.log.debug("DIAG: {s}", .{msg.str()});
+    }
+}
+
 pub fn main() !void {
     var args_it = try std.process.argsWithAllocator(gpa.allocator());
     _ = args_it.skip();
@@ -370,7 +434,10 @@ pub fn main() !void {
 
     const file_filter = args_it.next() orelse printUsageAndExit();
 
-    var index = clang.Index.init(true, false) catch {
+    clang.c.clang_uninstall_llvm_fatal_error_handler();
+    clang.c.clang_toggleCrashRecovery(0);
+
+    var index = clang.Index.init(true, true) catch {
         std.log.err("Failed to create an index", .{});
         std.os.exit(1);
         return;
@@ -398,11 +465,32 @@ pub fn main() !void {
         .allocator = gpa.allocator(),
     };
 
+    const diagnostics = clang.c.clang_getDiagnosticSetFromTU(translation_unit.raw);
+    for (0..clang.c.clang_getNumDiagnosticsInSet(diagnostics)) |i| {
+        const diag = clang.c.clang_getDiagnosticInSet(diagnostics, @intCast(i));
+        const msg = clang.String{ .raw = clang.c.clang_getDiagnosticSpelling(diag) };
+        defer msg.free();
+
+        std.log.debug("DIAG: {s}", .{msg.str()});
+    }
+
     defer env.out_file.close();
 
     try writer.writeFileHeader(&env);
 
-    clang.indexTranslationUnitUserInfo(index, translation_unit, &env, .{ .indexDeclaration = indexDeclaration });
+    clang.indexTranslationUnitUserInfo(
+        index,
+        translation_unit,
+        &env,
+        .{
+            .indexDeclaration = indexDeclaration,
+            .abortQuery = abort_cb,
+            .diagnostic = diagnostic,
+        },
+    ) catch |err| {
+        std.log.err("{!}", .{err});
+        std.os.exit(1);
+    };
 
     // clang.visitChildrenUserData(translation_unit.cursor(), &env, visitor);
 

@@ -14,6 +14,8 @@ const ZigKeywords = std.ComptimeStringMap([]const u8, .{
     .{ "type", "type_" },
     .{ "align", "align_" },
     .{ "opaque", "opaque_" },
+    .{ "resume", "resume_" },
+    .{ "null", "null_" },
 });
 
 fn clearZigKeyword(str: []const u8) []const u8 {
@@ -114,22 +116,28 @@ pub fn writeProtocol(p: *const objz.Protocol, underlying_writer: anytype) anyerr
     try writer.printLineIndent("const __protocol_name = \"{s}\";\n", .{p.name});
 
     if (p.class_methods.items.len > 0) {
-        try writer.writeLineIndent("pub const ClassMethods = struct {");
+        try writer.writeLineIndent("pub fn ClassMethods(comptime Class__: type, comptime Instance__: type) type {");
         writer.pushLevel();
+        try writer.writeLineIndent("return struct {");
+        writer.pushLevel();
+        try writer.writeLineIndent("const __dis_class = Class__;");
+        try writer.writeLineIndent("const __dis_instance = Instance__;");
         for (p.class_methods.items) |*method| {
-            try writeMethod(method, &writer);
+            try writeMethod(method, "Class__.", &writer);
         }
         writer.popLevel();
         try writer.writeLineIndent("};");
+        writer.popLevel();
+        try writer.writeLineIndent("}");
     }
 
     if (p.instance_methods.items.len > 0) {
-        try writer.writeLineIndent("pub fn InstanceMethods(comptime Instance: type) type {");
+        try writer.writeLineIndent("pub fn InstanceMethods(comptime Instance__: type) type {");
         writer.pushLevel();
         try writer.writeLineIndent("return struct {");
         writer.pushLevel();
         for (p.instance_methods.items) |*method| {
-            try writeMethod(method, &writer);
+            try writeMethod(method, "", &writer);
         }
         writer.popLevel();
         try writer.writeLineIndent("};");
@@ -195,8 +203,23 @@ pub fn writeStruct(struct_: *const objz.Struct, underlying_writer: anytype) anye
 pub fn writeClass(c: *const objz.Class, underlying_writer: anytype) anyerror!void {
     var writer = indentedWriter(underlying_writer);
 
-    try writer.printLine("pub const {s} = struct {{", .{c.name});
-    writer.pushLevel();
+    if (c.isGeneric()) {
+        try writer.print("pub fn {s}(", .{c.name});
+        for (c.type_args, 0..) |arg, i| {
+            try writer.print("comptime {s}: type", .{arg});
+            if (i < c.type_args.len - 1) try writer.write(", ");
+        }
+        try writer.writeLine(") type {");
+        writer.pushLevel();
+        try writer.writeLineIndent("return struct {");
+        writer.pushLevel();
+        for (c.type_args, 0..) |arg, i| {
+            try writer.printLineIndent("const __arg_discard{d} = {s};", .{ i, arg });
+        }
+    } else {
+        try writer.printLine("pub const {s} = struct {{", .{c.name});
+        writer.pushLevel();
+    }
 
     try writer.writeLineIndent("const Self = @This();");
 
@@ -219,7 +242,7 @@ pub fn writeClass(c: *const objz.Class, underlying_writer: anytype) anyerror!voi
 
     const methods = c.class_methods.items;
     for (methods, 0..) |*method, i| {
-        try writeMethod(method, &writer);
+        try writeMethod(method, "", &writer);
         if (i < methods.len - 1) try writer.write("\n");
     }
 
@@ -231,11 +254,18 @@ pub fn writeClass(c: *const objz.Class, underlying_writer: anytype) anyerror!voi
     }
 
     writer.popLevel();
-    try writer.writeLine("};\n");
+
+    if (c.isGeneric()) {
+        try writer.writeLineIndent("};");
+        writer.popLevel();
+        try writer.writeLine("}\n");
+    } else {
+        try writer.writeLine("};\n");
+    }
 }
 
 fn writeInstace(c: *const objz.Class, writer: anytype) anyerror!void {
-    try writer.writeLineIndent("pub const Instance = struct {");
+    try writer.writeLineIndent("pub const Instance__ = struct {");
     writer.pushLevel();
 
     try writer.writeLineIndent("pub const conforms_to = Self.conforms_to;");
@@ -245,7 +275,7 @@ fn writeInstace(c: *const objz.Class, writer: anytype) anyerror!void {
 
     var methods = c.instance_methods.items;
     for (methods, 0..) |*method, i| {
-        try writeMethod(method, writer);
+        try writeMethod(method, "", writer);
         if (i < methods.len - 1) try writer.writeLine("");
     }
 
@@ -258,12 +288,12 @@ fn writeInstace(c: *const objz.Class, writer: anytype) anyerror!void {
     try writer.writeLineIndent("};");
 }
 
-fn writeMethod(m: *const objz.Method, writer: anytype) anyerror!void {
+fn writeMethod(m: *const objz.Method, class_call: []const u8, writer: anytype) anyerror!void {
     const name = try m.fnName(&fmt_buf);
     if (m.placement == .class) {
         try writer.printIndent("pub inline fn {s}(", .{clearZigKeyword(name)});
     } else {
-        try writer.printIndent("pub inline fn {s}(self: Instance", .{clearZigKeyword(name)});
+        try writer.printIndent("pub inline fn {s}(self: Instance__", .{clearZigKeyword(name)});
     }
 
     for (m.arguments, 0..) |argument, i| {
@@ -276,7 +306,7 @@ fn writeMethod(m: *const objz.Method, writer: anytype) anyerror!void {
     writer.pushLevel();
 
     if (m.placement == .class) {
-        try writer.printIndent("return __call({s}, sel(\"{s}\"), .{{", .{ m.return_typ, m.selector });
+        try writer.printIndent("return {s}__call({s}, sel(\"{s}\"), .{{", .{ class_call, m.return_typ, m.selector });
     } else {
         try writer.printIndent("return self.__call({s}, sel(\"{s}\"), .{{", .{ m.return_typ, m.selector });
     }
@@ -299,46 +329,45 @@ pub fn writeFileHeader(env: *objz.Env) anyerror!void {
         \\const objz = @import("objz");
         \\const objc = @import("objc");
         \\const sel = objc.sel;
+        \\const Sel = objc.Sel;
         \\
         \\const Id = objz.Id;
         \\const NSObject = objz.NSObject;
-        \\const NSString = objz.NSString;
-        \\const NSDictionary = objz.NSDictionary;
-        \\const NSRange = objz.NSRange;
+        \\const Class = objz.Class;
         \\
         \\
     );
 }
 
 const instance_methods: []const u8 =
-    \\pub inline fn __call(self: Instance, comptime ReturnType: type, selector: objc.Sel, args: anytype) ReturnType {
+    \\pub inline fn __call(self: Instance__, comptime ReturnType: type, selector__: objc.Sel, args__: anytype) ReturnType {
     \\    if (comptime objz.isInstanceType(ReturnType)) {
-    \\        const instance = self.__object.msgSend(objc.Object, selector, args);
+    \\        const instance = self.__object.msgSend(objc.Object, selector__, args__);
     \\        return ReturnType{ .__object = instance };
     \\    } else {
-    \\        return self.__object.msgSend(ReturnType, selector, args);
+    \\        return self.__object.msgSend(ReturnType, selector__, args__);
     \\    }
     \\}
     \\
 ;
 
 const class_methods: []const u8 =
-    \\inline fn class() objc.Class {
+    \\inline fn class__() objc.Class {
     \\    if (Self.__class) |cls| return cls;
     \\    Self.__class = objc.Class.getClass(Self.__class_name).?;
     \\    return Self.__class.?;
     \\}
     \\
-    \\pub inline fn alloc() Instance {
-    \\    return __call(Instance, objc.sel("alloc"), .{});
+    \\pub inline fn alloc() Instance__ {
+    \\    return __call(Instance__, objc.sel("alloc"), .{});
     \\}
     \\
-    \\pub inline fn __call(comptime ReturnType: type, selector: objc.Sel, args: anytype) ReturnType {
+    \\pub inline fn __call(comptime ReturnType: type, selector__: objc.Sel, args__: anytype) ReturnType {
     \\    if (comptime objz.isInstanceType(ReturnType)) {
-    \\        const instance = class().msgSend(objc.Object, selector, args);
+    \\        const instance = class__().msgSend(objc.Object, selector__, args__);
     \\        return ReturnType{ .__object = instance };
     \\    } else {
-    \\        return class().msgSend(ReturnType, selector, args);
+    \\        return class__().msgSend(ReturnType, selector__, args__);
     \\    }
     \\}
     \\

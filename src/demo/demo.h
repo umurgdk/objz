@@ -22,22 +22,34 @@ typedef struct {
 } FnPointers;
 
 NS_ASSUME_NONNULL_BEGIN
+
 @protocol SomeProtocol <NSObject>
 - (void)someMethod:(id<NSObject>)anObject;
 @end
 
+@interface Generic<__covariant A, __covariant B> : NSObject
+@property (copy, readwrite) A a;
+@property (copy, readwrite) B b;
+
+- (void)method:(const A <SomeProtocol> _Nonnull [_Nullable])arg;
+- (void)dynArray:(const NSUInteger [_Nullable])arg;
+@end
+
 @interface AnotherClass : NSObject
 - (void)blit:(MTLBlitOption)options;
+- (instancetype)init;
 @end
 
 @interface MyClass : AnotherClass <SomeProtocol>
 
-@property NSString *name;
-@property NSUInteger age;
+@property (copy, nonatomic, readwrite) NSString *name;
+@property (nonatomic, readwrite) NSUInteger age;
+@property (nonatomic, readwrite) NSUInteger (*callback)(NSUInteger num);
 
 + (instancetype)factory;
 - (instancetype)initWithName:(NSString *)name andInt:(NSUInteger)age;
 - (int)primitiveMethod:(int)count;
+- (NSUInteger)runCallback:(NSUInteger)num;
 - (id<SomeProtocol>)instanceMethod:
     (NSDictionary<AnotherClass *, NSString *> *)name;
 
